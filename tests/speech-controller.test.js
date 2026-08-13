@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { SpeechController } = require("../src/speech-controller.js");
+const { SpeechController } = require("../src/speech-controller-v2.js");
 
 test("resume video before speaking queued backlog", () => {
   const spoken = [];
