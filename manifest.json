@@ -2,9 +2,12 @@
   "manifest_version": 3,
   "name": "SubToVoice",
   "description": "Read YouTube subtitles aloud as natural buffered speech without dropping lines.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "permissions": ["storage", "activeTab"],
   "host_permissions": ["https://www.youtube.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_title": "SubToVoice",
     "default_popup": "popup.html"
@@ -13,8 +16,10 @@
     {
       "matches": ["https://www.youtube.com/*"],
       "js": [
+        "src/logger.js",
         "src/subtitle-buffer.js",
-        "src/speech-controller-v2.js",
+        "src/speech-controller-v3.js",
+        "src/debug-hooks.js",
         "src/content.js"
       ],
       "run_at": "document_idle"
