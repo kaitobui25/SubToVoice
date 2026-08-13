@@ -9,7 +9,14 @@
   const ONLY_PUNCTUATION = /^[,.;:!?。！？，、；：…]+$/u;
   const TRAILING_PUNCTUATION = /([,.;:!?。！？，、；：…]+)$/u;
   const SOFT_ENDING_PUNCTUATION = /[,;:，、；：]+$/u;
+  const TERMINAL_BOUNDARY = /[.!?。！？…]+[\]})"'”’»]*(?=\s|$)/gu;
+  const SOFT_BOUNDARY = /[,;:，、；：]+(?=\s|$)/gu;
   const SOUND_ONLY = /^(?:[\[（(【].{0,30}(?:music|applause|laughter|laughs|cheering|音楽|拍手|笑|音乐|掌声|tiếng nhạc|nhạc|vỗ tay|cười).{0,30}[\]）)】]|[♪♫♬\s]+)$/iu;
+  const VIETNAMESE_CONTINUATION_WORDS = new Set([
+    "ai", "bằng", "bị", "bởi", "các", "cho", "có", "của", "cũng", "đang", "để", "được",
+    "giống", "hay", "hoặc", "khi", "là", "mà", "một", "nhận", "như", "những", "nếu", "ra",
+    "rằng", "sẽ", "thì", "thấy", "theo", "trên", "trong", "từ", "và", "về", "vì", "với",
+  ]);
 
   function normalizeWhitespace(text) {
     return String(text || "")
@@ -116,12 +123,73 @@
     return `${clean}.`;
   }
 
+  function shouldDeferSettled(text) {
+    const clean = normalizeWhitespace(text);
+    if (!clean || TERMINAL_PUNCTUATION.test(clean)) return false;
+    if (SOFT_ENDING_PUNCTUATION.test(clean)) return true;
+
+    const words = canonicalWords(clean);
+    if (!words.length) return false;
+    if (words.length <= 4) return true;
+    return VIETNAMESE_CONTINUATION_WORDS.has(words[words.length - 1]);
+  }
+
+  function boundaryEnds(text, pattern, minEnd, maxEnd) {
+    const hits = [];
+    pattern.lastIndex = 0;
+    for (const match of text.matchAll(pattern)) {
+      const end = match.index + match[0].length;
+      if (end >= minEnd && end <= maxEnd) hits.push(end);
+    }
+    return hits;
+  }
+
+  function splitForMaxLength(text, maxChars) {
+    const clean = normalizeWhitespace(text);
+    const limit = Math.max(1, Number(maxChars) || 1);
+    if (clean.length <= limit) return null;
+
+    const minCut = Math.max(1, Math.floor(limit * 0.6));
+    const overflow = Math.max(24, Math.floor(limit * 0.2));
+    const lookAheadEnd = Math.min(clean.length, limit + overflow);
+
+    const terminalBefore = boundaryEnds(clean, TERMINAL_BOUNDARY, minCut, limit);
+    const softBefore = boundaryEnds(clean, SOFT_BOUNDARY, minCut, limit);
+    let cut = terminalBefore.at(-1) || softBefore.at(-1) || 0;
+
+    if (!cut) {
+      const terminalAhead = boundaryEnds(clean, TERMINAL_BOUNDARY, limit + 1, lookAheadEnd);
+      const softAhead = boundaryEnds(clean, SOFT_BOUNDARY, limit + 1, lookAheadEnd);
+      cut = terminalAhead[0] || softAhead[0] || 0;
+    }
+
+    // maxChars is a soft ceiling. Give the caption a little room to finish a phrase
+    // before falling back to a plain word boundary.
+    if (!cut && clean.length <= limit + overflow) return null;
+
+    if (!cut) {
+      const spaceBefore = clean.lastIndexOf(" ", limit);
+      if (spaceBefore >= minCut) cut = spaceBefore;
+      else {
+        const spaceAhead = clean.indexOf(" ", limit);
+        if (spaceAhead > 0 && spaceAhead <= lookAheadEnd) cut = spaceAhead;
+      }
+    }
+
+    if (!cut) cut = limit;
+    const head = normalizeWhitespace(clean.slice(0, cut));
+    const tail = normalizeWhitespace(clean.slice(cut));
+    if (!head || !tail) return null;
+    return { head, tail };
+  }
+
   class PhraseBuffer {
     constructor(options = {}) {
       this.onFlush = typeof options.onFlush === "function" ? options.onFlush : () => {};
       this.settleMs = Number(options.settleMs ?? 700);
       this.punctuationMs = Number(options.punctuationMs ?? 160);
       this.hardGapMs = Number(options.hardGapMs ?? 1400);
+      this.incompleteSettleMs = Number(options.incompleteSettleMs ?? 4500);
       this.maxChars = Number(options.maxChars ?? 180);
       this.skipSoundLabels = options.skipSoundLabels !== false;
       this.addTerminalPunctuation = options.addTerminalPunctuation !== false;
@@ -136,6 +204,7 @@
       if (options.settleMs != null) this.settleMs = Number(options.settleMs);
       if (options.punctuationMs != null) this.punctuationMs = Number(options.punctuationMs);
       if (options.hardGapMs != null) this.hardGapMs = Number(options.hardGapMs);
+      if (options.incompleteSettleMs != null) this.incompleteSettleMs = Number(options.incompleteSettleMs);
       if (options.maxChars != null) this.maxChars = Number(options.maxChars);
       if (options.skipSoundLabels != null) this.skipSoundLabels = Boolean(options.skipSoundLabels);
       if (options.addTerminalPunctuation != null) {
@@ -148,22 +217,32 @@
       if (!clean) return false;
       if (this.skipSoundLabels && isSoundOnly(clean)) return false;
 
-      if (!this.settlingPaused && this.text && this.lastInputAt && nowMs - this.lastInputAt >= this.hardGapMs) {
-        this.flush("gap");
-      }
-
-      if (this.text && this.text.length + clean.length + 1 > this.maxChars) {
-        this.flush("max-length");
+      if (!this.settlingPaused && this.text && this.lastInputAt) {
+        const gapMs = nowMs - this.lastInputAt;
+        const holdIncomplete = shouldDeferSettled(this.text) && gapMs < this.incompleteSettleMs;
+        if (gapMs >= this.hardGapMs && !holdIncomplete) this.flush("gap");
       }
 
       this.text = smartJoin(this.text, clean);
+      this._flushSafeMaxLengthChunks();
       this.lastInputAt = nowMs;
       this._schedule(this._settleDelay());
       return true;
     }
 
+    _flushSafeMaxLengthChunks() {
+      while (this.text.length > this.maxChars) {
+        const split = splitForMaxLength(this.text, this.maxChars);
+        if (!split) return;
+        this.text = split.tail;
+        this._emit(split.head, "max-length", false);
+      }
+    }
+
     _settleDelay() {
-      return TERMINAL_PUNCTUATION.test(this.text) ? this.punctuationMs : this.settleMs;
+      if (TERMINAL_PUNCTUATION.test(this.text)) return this.punctuationMs;
+      if (shouldDeferSettled(this.text)) return Math.max(this.settleMs, this.incompleteSettleMs);
+      return this.settleMs;
     }
 
     _schedule(delayMs) {
@@ -197,6 +276,14 @@
       if (this.text) this._schedule(this._settleDelay());
     }
 
+    _emit(rawText, reason, addTerminalPunctuation = this.addTerminalPunctuation) {
+      const raw = normalizeWhitespace(rawText);
+      if (!raw) return "";
+      const spoken = addTerminalPunctuation ? ensureTerminalPunctuation(raw) : raw;
+      this.onFlush(spoken, reason);
+      return spoken;
+    }
+
     flush(reason = "manual") {
       if (this.timer) {
         clearTimeout(this.timer);
@@ -206,9 +293,7 @@
       this.text = "";
       this.lastInputAt = 0;
       if (!raw) return "";
-      const spoken = this.addTerminalPunctuation ? ensureTerminalPunctuation(raw) : raw;
-      this.onFlush(spoken, reason);
-      return spoken;
+      return this._emit(raw, reason, reason === "max-length" ? false : this.addTerminalPunctuation);
     }
 
     reset() {
@@ -232,6 +317,8 @@
     ensureTerminalPunctuation,
     isSoundOnly,
     normalizeWhitespace,
+    shouldDeferSettled,
     smartJoin,
+    splitForMaxLength,
   };
 });
