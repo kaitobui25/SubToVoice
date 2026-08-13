@@ -14,6 +14,7 @@
 
   const { normalizeWhitespace } = base;
   const TRAILING_PUNCTUATION = /([,.;:!?。！？，、；：…]+)$/u;
+  const ZERO_WIDTH_SPACE = /\u200B/g;
   const KNOWN_AUTO_LANGUAGES = [
     "English", "Vietnamese", "Japanese", "Korean", "Chinese", "Spanish", "French", "German",
     "Italian", "Portuguese", "Russian", "Ukrainian", "Indonesian", "Thai", "Hindi", "Arabic",
@@ -25,6 +26,10 @@
     "iu",
   );
 
+  function normalizeCaptionText(text) {
+    return normalizeWhitespace(String(text || "").replace(ZERO_WIDTH_SPACE, ""));
+  }
+
   function comparableToken(token) {
     return String(token || "")
       .normalize("NFKC")
@@ -33,17 +38,17 @@
   }
 
   function tokenize(text) {
-    return normalizeWhitespace(text).split(/\s+/).filter(Boolean);
+    return normalizeCaptionText(text).split(/\s+/).filter(Boolean);
   }
 
   function trailingPunctuation(text) {
-    const match = normalizeWhitespace(text).match(TRAILING_PUNCTUATION);
+    const match = normalizeCaptionText(text).match(TRAILING_PUNCTUATION);
     return match ? match[1] : "";
   }
 
   function stripYouTubeCaptionInfoOverlay(text) {
-    const clean = normalizeWhitespace(text);
-    const stripped = normalizeWhitespace(clean.replace(YOUTUBE_INFO_OVERLAY, ""));
+    const clean = normalizeCaptionText(text);
+    const stripped = normalizeCaptionText(clean.replace(YOUTUBE_INFO_OVERLAY, ""));
     if (stripped !== clean) {
       try {
         root.SubToVoiceLog?.event?.("caption.info-overlay.stripped", { before: clean, after: stripped });
@@ -107,5 +112,5 @@
     return current;
   }
 
-  return { computeNovelText, stripYouTubeCaptionInfoOverlay };
+  return { computeNovelText, normalizeCaptionText, stripYouTubeCaptionInfoOverlay };
 });
