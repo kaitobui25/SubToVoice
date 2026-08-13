@@ -129,6 +129,7 @@
       this.lastInputAt = 0;
       this.timer = null;
       this.settlingPaused = false;
+      this.settlingPausedAt = 0;
     }
 
     updateOptions(options = {}) {
@@ -147,7 +148,7 @@
       if (!clean) return false;
       if (this.skipSoundLabels && isSoundOnly(clean)) return false;
 
-      if (this.text && this.lastInputAt && nowMs - this.lastInputAt >= this.hardGapMs) {
+      if (!this.settlingPaused && this.text && this.lastInputAt && nowMs - this.lastInputAt >= this.hardGapMs) {
         this.flush("gap");
       }
 
@@ -172,15 +173,28 @@
       this.timer = setTimeout(() => this.flush("settled"), Math.max(0, delayMs));
     }
 
-    setSettlingPaused(paused) {
+    setSettlingPaused(paused, nowMs = Date.now()) {
       const next = Boolean(paused);
       if (next === this.settlingPaused) return;
-      this.settlingPaused = next;
-      if (this.timer) {
-        clearTimeout(this.timer);
-        this.timer = null;
+
+      if (next) {
+        this.settlingPaused = true;
+        this.settlingPausedAt = nowMs;
+        if (this.timer) {
+          clearTimeout(this.timer);
+          this.timer = null;
+        }
+        return;
       }
-      if (!next && this.text) this._schedule(this._settleDelay());
+
+      const pausedAt = this.settlingPausedAt;
+      this.settlingPaused = false;
+      this.settlingPausedAt = 0;
+      if (this.lastInputAt && pausedAt) {
+        const excludedPauseMs = Math.max(0, nowMs - Math.max(pausedAt, this.lastInputAt));
+        this.lastInputAt += excludedPauseMs;
+      }
+      if (this.text) this._schedule(this._settleDelay());
     }
 
     flush(reason = "manual") {
@@ -203,6 +217,7 @@
       this.text = "";
       this.lastInputAt = 0;
       this.settlingPaused = false;
+      this.settlingPausedAt = 0;
     }
 
     pendingText() {
