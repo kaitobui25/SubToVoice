@@ -2,9 +2,8 @@
   "use strict";
 
   const logger = globalThis.SubToVoiceLog;
-  if (!logger) return;
-  logger.setSource("content");
-  const log = (type, data = {}, level = "info") => logger.event(type, data, level);
+  logger?.setSource?.("content");
+  const log = (type, data = {}, level = "info") => logger?.event?.(type, data, level);
 
   function videoState(video = document.querySelector("video.html5-main-video") || document.querySelector("video")) {
     return video ? {
@@ -24,6 +23,7 @@
     userAgent: navigator.userAgent,
   });
 
+  let activePhraseBuffer = null;
   const bufferApi = globalThis.SubToVoiceBuffer;
   if (bufferApi) {
     const originalNovel = bufferApi.computeNovelText;
@@ -37,6 +37,7 @@
     if (proto) {
       const originalPush = proto.push;
       proto.push = function (input, nowMs) {
+        activePhraseBuffer = this;
         const before = this.pendingText();
         log("buffer.push", { input, pendingBefore: before, nowMs: nowMs ?? Date.now(), video: videoState() });
         const accepted = originalPush.call(this, input, nowMs);
@@ -46,6 +47,7 @@
 
       const originalFlush = proto.flush;
       proto.flush = function (reason = "manual") {
+        activePhraseBuffer = this;
         const before = this.pendingText();
         log("buffer.flush.begin", { reason, pending: before, video: videoState() });
         const spoken = originalFlush.call(this, reason);
@@ -55,6 +57,7 @@
 
       const originalReset = proto.reset;
       proto.reset = function () {
+        activePhraseBuffer = this;
         log("buffer.reset", { pending: this.pendingText(), video: videoState() }, "warn");
         return originalReset.call(this);
       };
@@ -64,6 +67,12 @@
   const speechProto = globalThis.SubToVoiceSpeech?.SpeechController?.prototype;
   const instrumentedVideos = new WeakSet();
   if (speechProto) {
+    const originalEmitState = speechProto._emitState;
+    speechProto._emitState = function (extraStatus = "") {
+      activePhraseBuffer?.setSettlingPaused?.(this.pausedByUs);
+      return originalEmitState.call(this, extraStatus);
+    };
+
     const originalSetVideo = speechProto.setVideo;
     speechProto.setVideo = function (video) {
       const result = originalSetVideo.call(this, video);
