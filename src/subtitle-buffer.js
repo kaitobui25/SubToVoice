@@ -8,6 +8,7 @@
   const TERMINAL_PUNCTUATION = /[.!?。！？…]+[\]})"'”’»]*$/u;
   const ONLY_PUNCTUATION = /^[,.;:!?。！？，、；：…]+$/u;
   const TRAILING_PUNCTUATION = /([,.;:!?。！？，、；：…]+)$/u;
+  const SOFT_ENDING_PUNCTUATION = /[,;:，、；：]+$/u;
   const SOUND_ONLY = /^(?:[\[（(【].{0,30}(?:music|applause|laughter|laughs|cheering|音楽|拍手|笑|音乐|掌声|tiếng nhạc|nhạc|vỗ tay|cười).{0,30}[\]）)】]|[♪♫♬\s]+)$/iu;
 
   function normalizeWhitespace(text) {
@@ -41,13 +42,6 @@
     return a.length === b.length && a.every((value, index) => value === b[index]);
   }
 
-  /**
-   * Return only text that was newly introduced by a rolling YouTube caption.
-   * Examples:
-   *   "hello" -> "hello world"         => "world"
-   *   "hello world" -> "world again"   => "again"
-   *   "hello world" -> "hello world."  => "."
-   */
   function computeNovelText(previousText, currentText) {
     const previous = normalizeWhitespace(previousText);
     const current = normalizeWhitespace(currentText);
@@ -70,9 +64,6 @@
       return normalizeWhitespace(current.slice(previous.length));
     }
 
-    // Prefer a harmless repeated word over dropping a real word at a sentence
-    // boundary. Suffix/prefix overlap is only trustworthy while the previous
-    // rendered caption is still an unfinished rolling caption.
     if (TERMINAL_PUNCTUATION.test(previous)) {
       return current;
     }
@@ -121,6 +112,7 @@
   function ensureTerminalPunctuation(text) {
     const clean = normalizeWhitespace(text);
     if (!clean || TERMINAL_PUNCTUATION.test(clean)) return clean;
+    if (SOFT_ENDING_PUNCTUATION.test(clean)) return clean.replace(SOFT_ENDING_PUNCTUATION, ".");
     return `${clean}.`;
   }
 
@@ -136,6 +128,7 @@
       this.text = "";
       this.lastInputAt = 0;
       this.timer = null;
+      this.settlingPaused = false;
     }
 
     updateOptions(options = {}) {
@@ -164,13 +157,30 @@
 
       this.text = smartJoin(this.text, clean);
       this.lastInputAt = nowMs;
-      this._schedule(TERMINAL_PUNCTUATION.test(this.text) ? this.punctuationMs : this.settleMs);
+      this._schedule(this._settleDelay());
       return true;
+    }
+
+    _settleDelay() {
+      return TERMINAL_PUNCTUATION.test(this.text) ? this.punctuationMs : this.settleMs;
     }
 
     _schedule(delayMs) {
       if (this.timer) clearTimeout(this.timer);
+      this.timer = null;
+      if (this.settlingPaused || !this.text) return;
       this.timer = setTimeout(() => this.flush("settled"), Math.max(0, delayMs));
+    }
+
+    setSettlingPaused(paused) {
+      const next = Boolean(paused);
+      if (next === this.settlingPaused) return;
+      this.settlingPaused = next;
+      if (this.timer) {
+        clearTimeout(this.timer);
+        this.timer = null;
+      }
+      if (!next && this.text) this._schedule(this._settleDelay());
     }
 
     flush(reason = "manual") {
@@ -192,6 +202,7 @@
       this.timer = null;
       this.text = "";
       this.lastInputAt = 0;
+      this.settlingPaused = false;
     }
 
     pendingText() {
