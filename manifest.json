@@ -14,7 +14,7 @@
       "matches": ["https://www.youtube.com/*"],
       "js": [
         "src/subtitle-buffer.js",
-        "src/speech-controller.js",
+        "src/speech-controller-v2.js",
         "src/content.js"
       ],
       "run_at": "document_idle"
