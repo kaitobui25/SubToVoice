@@ -7,10 +7,14 @@ const FORMAT_VERSION = 1;
 let pending = [];
 let flushTimer = null;
 let flushPromise = Promise.resolve();
-let loggingEnabled = true;
+let loggingEnabled = null;
 
 chrome.storage.local.get({ debugLogging: true }).then(({ debugLogging }) => {
   loggingEnabled = debugLogging !== false;
+  backgroundEvent("background.loaded", { version: chrome.runtime.getManifest().version });
+}).catch(() => {
+  loggingEnabled = true;
+  backgroundEvent("background.loaded", { version: chrome.runtime.getManifest().version });
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -36,7 +40,7 @@ function safeEntry(entry) {
 }
 
 function queueEntry(entry) {
-  if (!loggingEnabled) return;
+  if (loggingEnabled !== true) return;
   pending.push(safeEntry(entry));
   if (pending.length >= 40) void flushPending();
   else if (!flushTimer) flushTimer = setTimeout(() => void flushPending(), FLUSH_DELAY_MS);
@@ -80,19 +84,19 @@ chrome.runtime.onStartup.addListener(() => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "SUBTOVOICE_LOG_APPEND") {
-    if (loggingEnabled) {
+    if (loggingEnabled === true) {
       const entry = safeEntry(message.entry);
       entry.data = { ...entry.data, sender: { tabId: sender.tab?.id ?? null, frameId: sender.frameId ?? null } };
       queueEntry(entry);
     }
-    sendResponse?.({ ok: true, enabled: loggingEnabled });
+    sendResponse?.({ ok: true, enabled: loggingEnabled === true });
     return;
   }
 
   if (message?.type === "SUBTOVOICE_LOG_GET") {
     flushPending().then(async () => {
       const result = await chrome.storage.local.get(LOG_KEY);
-      sendResponse({ ok: true, log: result[LOG_KEY] || baseStore(), enabled: loggingEnabled });
+      sendResponse({ ok: true, log: result[LOG_KEY] || baseStore(), enabled: loggingEnabled === true });
     }).catch((err) => sendResponse({ ok: false, error: err?.message || String(err) }));
     return true;
   }
@@ -109,9 +113,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === "SUBTOVOICE_LOG_MARK") {
     backgroundEvent("user.bug_mark", { note: String(message.note || "BUG").slice(0, 300) }, "warn");
-    void flushPending().then(() => sendResponse({ ok: true, enabled: loggingEnabled }));
+    void flushPending().then(() => sendResponse({ ok: true, enabled: loggingEnabled === true }));
     return true;
   }
 });
-
-backgroundEvent("background.loaded", { version: chrome.runtime.getManifest().version });
